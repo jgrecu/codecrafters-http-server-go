@@ -11,8 +11,10 @@ func main() {
         log.Fatalln("Failed to bind to port 4221")
     }
 
-    _, err = l.Accept()
+    conn, err := l.Accept()
     if err != nil {
         log.Fatalln("Error accepting connection: ", err.Error())
     }
+
+    conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
 }
