@@ -4,7 +4,6 @@ import (
     "fmt"
     "log"
     "net"
-    "strings"
 )
 
 func main() {
@@ -26,17 +25,26 @@ func main() {
         log.Fatalln("Error reading request data: ", err.Error())
     }
 
-    message := string(buffer[:n])
-    requestTarget := strings.Split(message, " ")[1]
+    message := buffer[:n]
+    request := newRequest(message)
 
     response := ""
-    if requestTarget == "/" || requestTarget == "/index.html" {
-        response = "HTTP/1.1 200 OK\r\n\r\n"
-    } else if strings.HasPrefix(requestTarget, "/echo/") {
-        text := requestTarget[len("/echo/"):]
-        response = fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(text), text)
+    if request.Route == "" {
+        response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n"
+    } else if request.Route == "echo" && len(request.Params) > 0 {
+        fmt.Sprintf(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
+            len(request.Params[0]),
+            request.Params[0],
+        )
+    } else if request.Route == "user-agent" {
+        response = fmt.Sprintf(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
+            len(request.Headers["User-Agent"]),
+            request.Headers["User-Agent"],
+        )
     } else {
-        response = "HTTP/1.1 404 Not Found\r\n\r\n"
+        response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n"
     }
 
     conn.Write([]byte(response))
