@@ -1,6 +1,7 @@
 package main
 
 import (
+    "fmt"
     "log"
     "net"
     "strings"
@@ -20,18 +21,23 @@ func main() {
     defer conn.Close()
 
     buffer := make([]byte, 1024)
-    conn.Read(buffer)
-
-    request := strings.Split(string(buffer), "\r\n")
-    line := strings.Split(request[0], " ")
-    //method := line[0]
-    requestTarget := line[1]
-    //protocol := line[2]
-
-    //fmt.Printf("Method: %v\nTarget: %v\nProtocol: %v\n", method, requestTarget, protocol)
-    if requestTarget == "/" || requestTarget == "/index.html" {
-        conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
-    } else {
-        conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+    n, err := conn.Read(buffer)
+    if err != nil {
+        log.Fatalln("Error reading request data: ", err.Error())
     }
+
+    message := string(buffer[:n])
+    requestTarget := strings.Split(message, " ")[1]
+
+    response := ""
+    if requestTarget == "/" || requestTarget == "/index.html" {
+        response = "HTTP/1.1 200 OK\r\n\r\n"
+    } else if strings.HasPrefix(requestTarget, "/echo/") {
+        text := requestTarget[len("/echo/"):]
+        response = fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(text), text)
+    } else {
+        response = "HTTP/1.1 404 Not Found\r\n\r\n"
+    }
+
+    conn.Write([]byte(response))
 }
