@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"log"
@@ -81,6 +83,25 @@ func main() {
 					return
 				}
 				content := uriParts[2]
+
+				if encoding, ok := request.Headers["Accept-Encoding"]; ok {
+					if encoding == "gzip" {
+						var b bytes.Buffer
+						gz := gzip.NewWriter(&b)
+						if _, err := gz.Write([]byte(content)); err != nil {
+							log.Fatal(err)
+						}
+
+						contentLength := len(b.Bytes())
+						conn.Write([]byte(fmt.Sprintf(
+							"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nContent-Encoding: %s\r\n\r\n%s",
+							contentLength,
+							encoding,
+							b.Bytes(),
+						)))
+					}
+				}
+
 				contentLength := utf8.RuneCountInString(content)
 
 				conn.Write([]byte(fmt.Sprintf(
