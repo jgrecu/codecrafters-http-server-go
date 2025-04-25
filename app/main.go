@@ -85,8 +85,8 @@ func main() {
 				content := uriParts[2]
 
 				if encodingStr, ok := request.Headers["Accept-Encoding"]; ok {
-					encodings := strings.Split(encodingStr, ", ")
-					for _, encoding := range encodings {
+					encodings := strings.SplitSeq(encodingStr, ", ")
+					for encoding := range encodings {
 						if encoding == "gzip" {
 							var b bytes.Buffer
 							gz := gzip.NewWriter(&b)
@@ -94,12 +94,13 @@ func main() {
 								log.Fatal(err)
 							}
 
-							contentLength := len(b.Bytes())
+							gz.Close()
+							contentLength := len(b.String())
 							conn.Write(fmt.Appendf(nil,
 								"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nContent-Encoding: %s\r\n\r\n%s",
 								contentLength,
 								encoding,
-								b.Bytes(),
+								b.String(),
 							))
 							return
 						}
