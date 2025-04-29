@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -14,38 +14,46 @@ import (
 )
 
 type HTTPRequest struct {
-	Headers map[string]string
-	Url     string
-	Method  string
-	Body    []byte
+	Headers     map[string]string
+	Path        string
+	Method      string
+	HttpVersion string
+	Body        []byte
 }
 
 type HTTPResponse struct {
-	Headers map[string]string
-	Code    int
-	Body    []byte
+	Headers     map[string]string
+	HttpVersion string
+	Code        HttpStatus
+	Body        []byte
 }
 
+type HttpStatus int16
+
 const (
-	StatusOK       = 200
-	StatusCreated  = 201
-	StatusNotFound = 404
+	StatusOK         HttpStatus = 200
+	StatusCreated    HttpStatus = 201
+	StatusNotFound   HttpStatus = 404
+	StatusNotAllowed HttpStatus = 405
 )
 
-func StatusText(code int) string {
-	switch code {
+func (h HttpStatus) String() string {
+	switch h {
 	case StatusOK:
 		return "OK"
 	case StatusCreated:
 		return "Created"
 	case StatusNotFound:
 		return "Not Found"
+	case StatusNotAllowed:
+		return "Not Allowed"
+	default:
+		return ""
 	}
-	return ""
 }
 
 func (resp HTTPResponse) Write() []byte {
-	str := fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.Code, StatusText(resp.Code))
+	str := fmt.Sprintf("%s %d %s\r\n", resp.HttpVersion, resp.Code, resp.Code)
 
 	for header, value := range resp.Headers {
 		str += fmt.Sprintf("%s: %s\r\n", header, value)
@@ -84,105 +92,144 @@ func main() {
 			log.Fatalln("Error accepting connection: ", err.Error())
 		}
 
-		go listenRequest(conn)
+		go handleConnection(conn)
 	}
 }
 
-func listenRequest(conn net.Conn) {
+func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	read := bufio.NewReader(conn)
-	buffer := make([]byte, 4096)
+	reader := bufio.NewReader(conn)
 
-	n, err := read.Read(buffer)
-	if err != nil {
-		log.Fatalln("Error reading request data: ", err.Error())
+	request := parseRequest(reader)
+	paths := strings.Split(request.Path, "/")
+
+	var response HTTPResponse
+
+	response.HttpVersion = request.HttpVersion
+	response.Headers = make(map[string]string)
+	response.Headers["Content-Type"] = "text/plain"
+
+	switch {
+	case paths[1] == "user-agent":
+		userAgent := request.Headers["User-Agent"]
+		response.Code = StatusOK
+		response.Headers["Content-Length"] = strconv.Itoa(len(userAgent))
+		response.Body = []byte(userAgent)
+	case paths[1] == "echo":
+		response.Code = StatusOK
+		if strings.Contains(request.Headers["Accept-Encoding"], "gzip") {
+			var b bytes.Buffer
+			enc := gzip.NewWriter(&b)
+			enc.Write([]byte(paths[2]))
+			enc.Close()
+			response.Headers["Content-Encoding"] = "gzip"
+			response.Headers["Content-Length"] = strconv.Itoa(len(b.String()))
+			response.Body = b.Bytes()
+		} else {
+			response.Headers["Content-Length"] = strconv.Itoa(len(paths[2]))
+			response.Body = []byte(paths[2])
+		}
+	case paths[1] == "files":
+		handleFiles(request, &response)
+	case request.Path == "/":
+		response.Code = StatusOK
+	default:
+		response.Code = StatusNotFound
 	}
 
-	rawRequest := buffer[:n]
-	parts := strings.Split(string(rawRequest), "\r\n\r\n")
-	metaParts := strings.Split(parts[0], "\r\n")
-	requestLineParts := strings.Split(metaParts[0], " ")
+	conn.Write(response.Write())
+}
+
+func parseRequest(reader *bufio.Reader) *HTTPRequest {
+	// Parse request information i.e. request method, url, http version
+	requestInfo, err := reader.ReadString('\n')
+	if err != nil {
+		log.Println("There was an error requesting info: ", err.Error())
+	}
+
+	urlParts := strings.Split(requestInfo, "\r\n")
+
+	parsedRequest := HTTPRequest{}
 	headers := make(map[string]string)
 
-	for i := 1; i < len(metaParts); i++ {
-		headerParts := strings.Split(metaParts[i], ": ")
-		if len(headerParts) >= 2 {
-			headers[headerParts[0]] = strings.Join(headerParts[1:], "")
+	methodPathVersion := strings.Split(urlParts[0], " ")
+
+	parsedRequest.Method = methodPathVersion[0]
+	parsedRequest.Path = methodPathVersion[1]
+	parsedRequest.HttpVersion = methodPathVersion[2]
+
+	// Parse headers
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			log.Println("There was an error requesting info: ", err.Error())
+		}
+
+		line = strings.Trim(line, "\n\r")
+
+		// End of headers
+		if line == "" {
+			break
+		}
+
+		name, value, found := strings.Cut(line, ": ")
+		if !found {
+			log.Println("Wrong header format", err.Error())
+		}
+		headers[name] = value
+	}
+
+	parsedRequest.Headers = headers
+
+	// Read the body if there's a Content-Length header
+	if contentLength, ok := parsedRequest.Headers["Content-Length"]; ok {
+		length, err := strconv.Atoi(contentLength)
+		if err == nil {
+			body := make([]byte, length)
+			_, err := io.ReadFull(reader, body)
+			if err != nil {
+				log.Println("Error reading body:", err.Error())
+			}
+			parsedRequest.Body = body
 		}
 	}
-
-	contentLength, _ := strconv.Atoi(headers["Content-Length"])
-
-	request := HTTPRequest{
-		Url:     requestLineParts[1],
-		Headers: headers,
-		Method:  requestLineParts[0],
-		Body:    []byte(parts[1][:contentLength]),
+	if err != nil {
+		log.Println("There was an error parsing body ", err.Error())
 	}
 
-	response := HTTPResponse{
-		Code: StatusNotFound,
-	}
+	return &parsedRequest
+}
 
-	if request.Url == "/" {
-		response.Code = StatusOK
-	} else if strings.HasPrefix(request.Url, "/echo") {
-		uriParts := strings.Split(request.Url, "/")
-		if len(uriParts) <= 3 {
-			content := uriParts[2]
-
-			foundEncoding := false
-			if encodingStr, ok := request.Headers["Accept-Encoding"]; ok {
-				encodings := strings.SplitSeq(encodingStr, ", ")
-				for encoding := range encodings {
-					if encoding == "gzip" {
-						var encodedContent bytes.Buffer
-						gz := gzip.NewWriter(&encodedContent)
-						if _, err := gz.Write([]byte(content)); err != nil {
-							log.Fatal(err)
-						}
-						gz.Close()
-
-						response.Code = StatusOK
-						response.Headers = map[string]string{"Content-Type": "text/plain", "Content-Encoding": encoding}
-						response.Body = encodedContent.Bytes()
-						foundEncoding = true
-						break
-					}
-				}
-			}
-
-			if !foundEncoding {
-				response.Code = StatusOK
-				response.Headers = map[string]string{"Content-Type": "text/plain"}
-				response.Body = []byte(content)
-			}
+func handleFiles(request *HTTPRequest, response *HTTPResponse) {
+	switch request.Method {
+	case "GET":
+		// dir := os.Args[2]
+		fileName := strings.TrimPrefix(request.Path, "/files/")
+		fileString := fmt.Sprintf("%s%s", tempDirectory, fileName)
+		file, err := os.ReadFile(fileString)
+		if err != nil {
+			response.Code = StatusNotFound
+		} else {
+			response.Code = StatusOK
+			response.Headers["Content-Length"] = strconv.Itoa(len(file))
+			response.Headers["Content-Type"] = "application/octet-stream"
+			response.Body = file
 		}
-	} else if strings.HasPrefix(request.Url, "/user-agent") {
-		content := request.Headers["User-Agent"]
-		response.Code = StatusOK
-		response.Headers = map[string]string{"Content-Type": "text/plain"}
-		response.Body = []byte(content)
-	} else if strings.HasPrefix(request.Url, "/files") {
-		uriParts := strings.Split(request.Url, "/")
-		if len(uriParts) <= 3 {
-			path := uriParts[2]
-
-			if request.Method == "GET" {
-				if _, err := os.Stat(fmt.Sprintf("/%s/%s", tempDirectory, path)); errors.Is(err, os.ErrNotExist) {
-					response.Code = StatusNotFound
-				} else {
-					content, _ := os.ReadFile(fmt.Sprintf("/%s/%s", tempDirectory, path))
-					response.Code = StatusOK
-					response.Headers = map[string]string{"Content-Type": "application/octet-stream"}
-					response.Body = content
-				}
-			} else if request.Method == "POST" {
-				os.WriteFile(fmt.Sprintf("/%s/%s", tempDirectory, path), request.Body, 0666)
-				response.Code = StatusCreated
-			}
+	case "POST":
+		// dir := os.Args[2]
+		fileName := strings.TrimPrefix(request.Path, "/files/")
+		fileString := fmt.Sprintf("%s%s", tempDirectory, fileName)
+		content := []byte(request.Body)
+		err := os.WriteFile(fileString, content, 0644)
+		if err != nil {
+			log.Println(err)
+			response.Code = StatusOK
+			break
+		} else {
+			response.Code = StatusCreated
 		}
+	default:
+		response.Code = StatusNotAllowed
 	}
-	conn.Write(response.Write())
 }
