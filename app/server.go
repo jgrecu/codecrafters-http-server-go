@@ -145,6 +145,10 @@ func handleCon(conn net.Conn) {
 			response.Code = StatusNotFound
 		}
 
+		if closeConn {
+			response.Headers["Connection"] = "close"
+		}
+		
 		_, err = conn.Write(response.Write())
 		if err != nil {
 			return
@@ -159,7 +163,7 @@ func parseRequest(reader *bufio.Reader) (*HTTPRequest, bool, error) {
 	// Parse request information i.e. request method, url, http version
 	requestInfo, err := reader.ReadString('\n')
 	if err != nil {
-		return nil, false, fmt.Errorf("There was an error requesting info: %v", err)
+		return nil, false, fmt.Errorf("there was an error requesting info: %v", err)
 	}
 
 	urlParts := strings.Split(requestInfo, "\r\n")
@@ -177,7 +181,7 @@ func parseRequest(reader *bufio.Reader) (*HTTPRequest, bool, error) {
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			return nil, false, fmt.Errorf("There was an error requesting info: %v", err)
+			return nil, false, fmt.Errorf("there was an error requesting info: %v", err)
 		}
 
 		line = strings.Trim(line, "\n\r")
@@ -189,7 +193,7 @@ func parseRequest(reader *bufio.Reader) (*HTTPRequest, bool, error) {
 
 		name, value, found := strings.Cut(line, ": ")
 		if !found {
-			return nil, false, fmt.Errorf("Wrong header format: %v", err)
+			return nil, false, fmt.Errorf("wrong header format: %v", err)
 		}
 		headers[name] = value
 	}
@@ -215,7 +219,7 @@ func parseRequest(reader *bufio.Reader) (*HTTPRequest, bool, error) {
 		}
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("There was an error parsing body: %v", err)
+		return nil, false, fmt.Errorf("there was an error parsing body: %v", err)
 	}
 
 	return &parsedRequest, closeConn, nil
