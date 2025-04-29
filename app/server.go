@@ -92,60 +92,74 @@ func main() {
 			log.Fatalln("Error accepting connection: ", err.Error())
 		}
 
-		go handleConnection(conn)
+		go handleCon(conn)
 	}
 }
 
-func handleConnection(conn net.Conn) {
+func handleCon(conn net.Conn) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
 
-	request := parseRequest(reader)
-	paths := strings.Split(request.Path, "/")
-
-	var response HTTPResponse
-
-	response.HttpVersion = request.HttpVersion
-	response.Headers = make(map[string]string)
-	response.Headers["Content-Type"] = "text/plain"
-
-	switch {
-	case paths[1] == "user-agent":
-		userAgent := request.Headers["User-Agent"]
-		response.Code = StatusOK
-		response.Headers["Content-Length"] = strconv.Itoa(len(userAgent))
-		response.Body = []byte(userAgent)
-	case paths[1] == "echo":
-		response.Code = StatusOK
-		if strings.Contains(request.Headers["Accept-Encoding"], "gzip") {
-			var b bytes.Buffer
-			enc := gzip.NewWriter(&b)
-			enc.Write([]byte(paths[2]))
-			enc.Close()
-			response.Headers["Content-Encoding"] = "gzip"
-			response.Headers["Content-Length"] = strconv.Itoa(len(b.String()))
-			response.Body = b.Bytes()
-		} else {
-			response.Headers["Content-Length"] = strconv.Itoa(len(paths[2]))
-			response.Body = []byte(paths[2])
+	for {
+		request, closeConn, err := parseRequest(reader)
+		if err != nil {
+			if err != io.EOF {
+				log.Println("Error reading request:", err)
+			}
+			return
 		}
-	case paths[1] == "files":
-		handleFiles(request, &response)
-	case request.Path == "/":
-		response.Code = StatusOK
-	default:
-		response.Code = StatusNotFound
-	}
+		paths := strings.Split(request.Path, "/")
 
-	conn.Write(response.Write())
+		var response HTTPResponse
+
+		response.HttpVersion = request.HttpVersion
+		response.Headers = make(map[string]string)
+		response.Headers["Content-Type"] = "text/plain"
+
+		switch {
+		case paths[1] == "user-agent":
+			userAgent := request.Headers["User-Agent"]
+			response.Code = StatusOK
+			response.Headers["Content-Length"] = strconv.Itoa(len(userAgent))
+			response.Body = []byte(userAgent)
+		case paths[1] == "echo":
+			response.Code = StatusOK
+			if strings.Contains(request.Headers["Accept-Encoding"], "gzip") {
+				var b bytes.Buffer
+				enc := gzip.NewWriter(&b)
+				enc.Write([]byte(paths[2]))
+				enc.Close()
+				response.Headers["Content-Encoding"] = "gzip"
+				response.Headers["Content-Length"] = strconv.Itoa(len(b.String()))
+				response.Body = b.Bytes()
+			} else {
+				response.Headers["Content-Length"] = strconv.Itoa(len(paths[2]))
+				response.Body = []byte(paths[2])
+			}
+		case paths[1] == "files":
+			handleFiles(request, &response)
+		case request.Path == "/":
+			response.Code = StatusOK
+		default:
+			response.Code = StatusNotFound
+		}
+
+		_, err = conn.Write(response.Write())
+		if err != nil {
+			return
+		}
+		if closeConn {
+			return
+		}
+	}
 }
 
-func parseRequest(reader *bufio.Reader) *HTTPRequest {
+func parseRequest(reader *bufio.Reader) (*HTTPRequest, bool, error) {
 	// Parse request information i.e. request method, url, http version
 	requestInfo, err := reader.ReadString('\n')
 	if err != nil {
-		log.Println("There was an error requesting info: ", err.Error())
+		return nil, false, fmt.Errorf("There was an error requesting info: %v", err)
 	}
 
 	urlParts := strings.Split(requestInfo, "\r\n")
@@ -163,7 +177,7 @@ func parseRequest(reader *bufio.Reader) *HTTPRequest {
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			log.Println("There was an error requesting info: ", err.Error())
+			return nil, false, fmt.Errorf("There was an error requesting info: %v", err)
 		}
 
 		line = strings.Trim(line, "\n\r")
@@ -175,9 +189,15 @@ func parseRequest(reader *bufio.Reader) *HTTPRequest {
 
 		name, value, found := strings.Cut(line, ": ")
 		if !found {
-			log.Println("Wrong header format", err.Error())
+			return nil, false, fmt.Errorf("Wrong header format: %v", err)
 		}
 		headers[name] = value
+	}
+
+	// Check for Connection: close
+	closeConn := false
+	if val, ok := headers["Connection"]; ok && strings.ToLower(val) == "close" {
+		closeConn = true
 	}
 
 	parsedRequest.Headers = headers
@@ -195,10 +215,10 @@ func parseRequest(reader *bufio.Reader) *HTTPRequest {
 		}
 	}
 	if err != nil {
-		log.Println("There was an error parsing body ", err.Error())
+		return nil, false, fmt.Errorf("There was an error parsing body: %v", err)
 	}
 
-	return &parsedRequest
+	return &parsedRequest, closeConn, nil
 }
 
 func handleFiles(request *HTTPRequest, response *HTTPResponse) {
