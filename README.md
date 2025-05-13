@@ -13,3 +13,13 @@ and more.
 
 **Note**: If you're viewing this repo on GitHub, head over to
 [codecrafters.io](https://codecrafters.io) to try the challenge.
+
+## Testing & Coverage
+
+See [TESTING.md](./TESTING.md) for details on running tests, checking coverage, and what is covered by the test suite.
+
+- To run all tests: `go test ./app/...`
+- To check coverage: `go test -cover ./app/...`
+- To generate a coverage report: `go test -coverprofile=coverage.out ./app/... && go tool cover -html=coverage.out`
+
+> Current coverage: Over 45% and improving!

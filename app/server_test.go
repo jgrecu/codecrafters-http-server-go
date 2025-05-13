@@ -69,6 +69,26 @@ func TestHTTPResponseWriteNoBody(t *testing.T) {
 	}
 }
 
+func TestHTTPResponseWrite_EmptyHeadersAndBody(t *testing.T) {
+	resp := HTTPResponse{
+		Headers:     map[string]string{},
+		HttpVersion: "HTTP/1.1",
+		Code:        StatusOK,
+		Body:        nil,
+	}
+	out := resp.Write()
+	s := string(out)
+	if !strings.Contains(s, "200 OK") {
+		t.Errorf("Expected status line for 200 OK, got %q", s)
+	}
+	if strings.Contains(s, "Content-Length:") {
+		t.Errorf("Should not have Content-Length for nil body, got %q", s)
+	}
+	if strings.Contains(s, "\r\n\r\n\r\n") {
+		t.Errorf("Should not have extra CRLFs, got %q", s)
+	}
+}
+
 func TestHandleRequestEcho(t *testing.T) {
 	req := &HTTPRequest{
 		Headers:     map[string]string{},
@@ -130,6 +150,22 @@ func TestHandleRequestRoot(t *testing.T) {
 	}
 }
 
+func TestHandleRequestRoot_Headers(t *testing.T) {
+	req := &HTTPRequest{
+		Headers:     map[string]string{"X-Test": "1"},
+		Path:        "/",
+		Method:      "GET",
+		HttpVersion: "HTTP/1.1",
+	}
+	resp := handleRequest(req)
+	if resp.Code != StatusOK {
+		t.Errorf("Expected StatusOK for root, got %v", resp.Code)
+	}
+	if resp.Headers["Content-Type"] != "text/plain" {
+		t.Errorf("Expected Content-Type header for root")
+	}
+}
+
 func TestHandleRequestEchoEmpty(t *testing.T) {
 	req := &HTTPRequest{
 		Headers:     map[string]string{},
@@ -143,6 +179,30 @@ func TestHandleRequestEchoEmpty(t *testing.T) {
 	}
 	if string(resp.Body) != "" {
 		t.Errorf("Expected empty body for /echo/, got %q", string(resp.Body))
+	}
+}
+
+func TestHandleRequestEchoGzipEmpty(t *testing.T) {
+	req := &HTTPRequest{
+		Headers:     map[string]string{"Accept-Encoding": "gzip"},
+		Path:        "/echo/",
+		Method:      "GET",
+		HttpVersion: "HTTP/1.1",
+	}
+	resp := handleRequest(req)
+	if resp.Headers["Content-Encoding"] != "gzip" {
+		t.Errorf("Expected gzip encoding for empty echo")
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(resp.Body))
+	if err != nil {
+		t.Fatalf("Failed to create gzip reader: %v", err)
+	}
+	unzipped, err := io.ReadAll(gr)
+	if err != nil {
+		t.Fatalf("Failed to read gzip body: %v", err)
+	}
+	if string(unzipped) != "" {
+		t.Errorf("Expected empty gzip body, got %q", string(unzipped))
 	}
 }
 
@@ -223,6 +283,20 @@ func TestHandleFilesGetNotFound(t *testing.T) {
 	}
 }
 
+func TestHandleRequestFilesNotSetTempDir(t *testing.T) {
+	resp := &HTTPResponse{Headers: map[string]string{}}
+	req := &HTTPRequest{
+		Method:      "GET",
+		Path:        "/files/shouldnotexist.txt",
+		HttpVersion: "HTTP/1.1",
+	}
+	tempDirectory = ""
+	handleFiles(req, resp)
+	if resp.Code != StatusNotFound {
+		t.Errorf("Expected StatusNotFound for missing file with unset tempDirectory, got %v", resp.Code)
+	}
+}
+
 // Test handleFiles POST and GET for file
 func TestHandleFilesPostAndGet(t *testing.T) {
 	filename := "testfile.txt"
@@ -256,6 +330,39 @@ func TestHandleFilesPostAndGet(t *testing.T) {
 	}
 	if string(resp2.Body) != "hello world" {
 		t.Errorf("Expected file content 'hello world', got %q", string(resp2.Body))
+	}
+}
+
+func TestHandleFilesPostEmptyBody(t *testing.T) {
+	filename := "emptybody.txt"
+	filepath := os.TempDir() + "/" + filename
+	defer os.Remove(filepath)
+
+	resp := &HTTPResponse{Headers: map[string]string{}}
+	req := &HTTPRequest{
+		Method:      "POST",
+		Path:        "/files/" + filename,
+		HttpVersion: "HTTP/1.1",
+		Body:        []byte{},
+	}
+	tempDirectory = os.TempDir() + "/"
+	handleFiles(req, resp)
+	if resp.Code != StatusCreated {
+		t.Errorf("Expected StatusCreated for POST with empty body, got %v", resp.Code)
+	}
+	// GET to verify file is empty
+	resp2 := &HTTPResponse{Headers: map[string]string{}}
+	req2 := &HTTPRequest{
+		Method:      "GET",
+		Path:        "/files/" + filename,
+		HttpVersion: "HTTP/1.1",
+	}
+	handleFiles(req2, resp2)
+	if resp2.Code != StatusOK {
+		t.Errorf("Expected StatusOK for GET after POST with empty body, got %v", resp2.Code)
+	}
+	if len(resp2.Body) != 0 {
+		t.Errorf("Expected empty file body, got %q", string(resp2.Body))
 	}
 }
 
@@ -316,6 +423,33 @@ func TestParseRequestWithBody(t *testing.T) {
 	if string(req.Body) != "xyz" {
 		t.Errorf("Expected body 'xyz', got %q", string(req.Body))
 	}
+}
+
+func TestParseRequest_InvalidRequestLine(t *testing.T) {
+	raw := "BADREQUEST\r\nHost: localhost\r\n\r\n"
+	reader := bufio.NewReader(strings.NewReader(raw))
+	_, _, err := parseRequest(reader)
+	if err == nil {
+		t.Errorf("Expected error for invalid request line")
+	}
+}
+
+func TestParseRequest_HeaderReadError(t *testing.T) {
+	reader := bufio.NewReader(&errorReader{})
+	_, _, err := parseRequest(reader)
+	if err == nil {
+		t.Errorf("Expected error for header read error")
+	}
+}
+
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (n int, err error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (e *errorReader) ReadString(delim byte) (string, error) {
+	return "", io.ErrUnexpectedEOF
 }
 
 func TestParseRequestConnectionClose(t *testing.T) {

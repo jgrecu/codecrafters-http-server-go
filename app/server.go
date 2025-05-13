@@ -181,7 +181,9 @@ func parseRequest(reader *bufio.Reader) (*HTTPRequest, bool, error) {
 	headers := make(map[string]string)
 
 	methodPathVersion := strings.Split(urlParts[0], " ")
-
+	if len(methodPathVersion) < 3 {
+		return nil, false, fmt.Errorf("invalid request line: %q", urlParts[0])
+	}
 	parsedRequest.Method = methodPathVersion[0]
 	parsedRequest.Path = methodPathVersion[1]
 	parsedRequest.HttpVersion = methodPathVersion[2]
